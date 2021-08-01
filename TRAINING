@@ -1,0 +1,379 @@
+from __future__ import print_function
+
+
+import matplotlib
+matplotlib.use("Agg")
+
+# import the necessary packages
+#from keras.optimizers import Adam
+from keras.preprocessing.image import img_to_array
+#from sklearn.preprocessing import MultiLabelBinarizer
+
+#from mymodel.smallervggnet import NN4VGGNet #SmallerVGGNet
+#from mymodel.myNN import NN4VGGNet
+
+#from mymodel.VGG_NN4 import VGG_NN4_Net
+import math
+#import argparse
+import random
+import os
+from keras.optimizers import SGD
+import numpy
+from keras.preprocessing.image import  load_img
+import time
+from PIL import Image
+import keras
+
+
+
+from keras.layers import Conv2D, ZeroPadding2D, Activation, Input, concatenate
+from keras.layers.core import Lambda, Flatten, Dense
+from keras.layers.normalization import BatchNormalization
+from keras.layers.pooling import MaxPooling2D, AveragePooling2D
+from keras.models import Model
+from keras import backend as K
+
+
+
+#import utils
+#from utils import LRN2D
+
+import pickle
+
+import matplotlib
+matplotlib.use("Agg")
+
+# import the necessary packages
+from keras.optimizers import Adam
+from keras.preprocessing.image import img_to_array
+#from sklearn.preprocessing import MultiLabelBinarizer
+
+#from mymodel.smallervggnet import NN4VGGNet #SmallerVGGNet
+#from mymodel.myNN import NN4VGGNet
+
+#from mymodel.VGG_NN4 import VGG_NN4_Net
+import math
+#import argparse
+import random
+import os
+from keras.optimizers import SGD
+import numpy
+from keras.preprocessing.image import  load_img
+import time
+from PIL import Image
+import keras
+
+
+
+from keras.layers import Conv2D, ZeroPadding2D, Activation, Input, concatenate, DepthwiseConv2D, GlobalAveragePooling2D, Dropout
+from keras.layers.core import Lambda, Flatten, Dense
+from keras.layers.normalization import BatchNormalization
+from keras.layers.pooling import MaxPooling2D, AveragePooling2D
+from keras.models import Model
+from keras import backend as K
+
+#import utils
+#from utils import LRN2D
+
+from imutils import paths
+
+
+
+
+# GPU memory allocation ---------------------------
+if 'tensorflow' == K.backend():
+  import tensorflow as tf
+  from keras.backend.tensorflow_backend import set_session
+  config = tf.ConfigProto()
+  config.gpu_options.allow_growth = True
+  set_session(tf.Session(config=config))
+  tf.compat.v1.Session()
+  print("GPU is working")
+
+else:
+  print("NO GPU")
+  #----------------------------------------------------------
+
+
+
+#tf.compat.v1.Session()
+
+
+start_time = time.time()
+
+batch_size = 32
+num_classes = 3 #87
+epochs = 200
+data_augmentation = False
+
+label_counter = 0
+
+training_images = []
+training_labels = []
+
+labels = []
+labelbin = 'labelbin'
+
+dataset_path = '/home/moh/ARABIC/train_line_db/TRAIN'#
+
+
+imagePaths = sorted(list(paths.list_images(dataset_path)))
+random.seed(42)
+random.shuffle(imagePaths)
+
+for imagePath in imagePaths:
+    # load the image, pre-process it, and store it in the data list
+    print(imagePath)
+    # extract set of class labels from the image path and update the
+    # labels list
+    l = label = imagePath.split(os.path.sep)[-2]#.split("_")
+    labels.append(l)
+
+labels = numpy.array(labels)
+
+
+from sklearn.preprocessing import LabelBinarizer
+
+print("[INFO] class labels:")
+#mlb = MultiLabelBinarizer()
+#mlb = MultiLabelBinarizer()
+mlb = LabelBinarizer()
+labels = mlb.fit_transform(labels)
+
+
+
+print(labels)
+
+# save the multi-label binarizer to disk
+print("[INFO] serializing label binarizer...")
+f = open(labelbin, "wb")
+f.write(pickle.dumps(mlb))
+f.close()
+
+
+
+
+
+
+
+
+
+
+for subdir, dirs, files in os.walk(dataset_path):
+    for folder in dirs:
+        for folder_subdir, folder_dirs, folder_files in os.walk(os.path.join(subdir, folder)):
+            for file in folder_files:
+                training_images.append(os.path.join(folder_subdir, file))
+                training_labels.append(label_counter)
+
+        label_counter = label_counter + 1
+
+nice_n = math.floor(len(training_images) / batch_size) * batch_size
+
+print(nice_n)
+print(len(training_images))
+print(len(training_labels))
+print("number of classes")
+print(label_counter)
+
+
+perm = list(range(len(training_images)))
+random.shuffle(perm)
+training_images = [training_images[index] for index in perm]
+training_labels = [training_labels[index] for index in perm]
+
+print("Data is ready...")
+
+
+def get_batch():
+    index = 1
+
+    global current_index
+
+    B = numpy.zeros(shape=(batch_size, 224, 224, 3))
+    L = numpy.zeros(shape=(batch_size))
+
+    while index < batch_size:
+        try:
+            img = load_img(training_images[current_index])
+            img1 = img.resize((224,224),Image.ANTIALIAS)  #resize
+            B[index] = img_to_array(img1)
+            B[index] /= 255
+
+            L[index] = training_labels[current_index]
+
+            index = index + 1
+            current_index = current_index + 1
+        except:
+            print("Ignore image {}".format(training_images[current_index]))
+            current_index = current_index + 1
+            #break;
+
+    return B, keras.utils.to_categorical(L, num_classes)
+
+def _depthwise_conv_block(inputs, pointwise_conv_filters, alpha,
+                          depth_multiplier=1, strides=(1, 1), block_id=1):
+
+    channel_axis = 1 if K.image_data_format() == 'channels_first' else -1
+    pointwise_conv_filters = int(pointwise_conv_filters * alpha)
+
+    x = ZeroPadding2D(padding=(1, 1), name='conv_pad_%d' % block_id)(inputs)
+    x = DepthwiseConv2D((3, 3),
+                        padding='valid',
+                        depth_multiplier=depth_multiplier,
+                        strides=strides,
+                        use_bias=False,
+                        name='conv_dw_%d' % block_id)(x)
+    x = BatchNormalization(axis=channel_axis, name='conv_dw_%d_bn' % block_id)(x)
+    x = Activation(relu6, name='conv_dw_%d_relu' % block_id)(x)
+
+    x = Conv2D(pointwise_conv_filters, (1, 1),
+               padding='same',
+               use_bias=False,
+               strides=(1, 1),
+               name='conv_pw_%d' % block_id)(x)
+    x = BatchNormalization(axis=channel_axis, name='conv_pw_%d_bn' % block_id)(x)
+    return Activation(relu6, name='conv_pw_%d_relu' % block_id)(x)
+
+def relu6(x):
+    return K.relu(x, max_value=6)    
+    
+#def buildVGGNN4(width, height, depth,classes):
+    def load_model(input_shape=(224,224,3),
+               Mode="train",
+               Weights_path='./weights'):
+alpha = 1.0
+depth_multiplier = 1
+dropout = 1e-3
+gauss_size = 128
+            
+myInput = Input(shape=(224, 224, 3))
+            
+y = Input(shape=([num_classes]))
+        
+x = ZeroPadding2D(padding=(3, 3), input_shape=(224, 224, 3))(myInput)
+            
+            
+            
+            
+x = _depthwise_conv_block(x, 64, alpha, depth_multiplier, block_id=1)
+x = _depthwise_conv_block(x, 128, alpha, depth_multiplier,strides=(2, 2), block_id=2)
+x = _depthwise_conv_block(x, 128, alpha, depth_multiplier, block_id=3)
+x = _depthwise_conv_block(x, 256, alpha, depth_multiplier,strides=(2, 2), block_id=4)
+x = _depthwise_conv_block(x, 256, alpha, depth_multiplier, block_id=5)
+x = _depthwise_conv_block(x, 512, alpha, depth_multiplier,strides=(2, 2), block_id=6)
+x = _depthwise_conv_block(x, 512, alpha, depth_multiplier, block_id=7)
+x = _depthwise_conv_block(x, 512, alpha, depth_multiplier, block_id=8)
+x = _depthwise_conv_block(x, 512, alpha, depth_multiplier, block_id=9)
+x = _depthwise_conv_block(x, 512, alpha, depth_multiplier, block_id=10)
+x = _depthwise_conv_block(x, 512, alpha, depth_multiplier, block_id=11)
+x = _depthwise_conv_block(x, 1024, alpha, depth_multiplier,strides=(2, 2), block_id=12)
+x = _depthwise_conv_block(x, 1024, alpha, depth_multiplier, block_id=13)
+            
+
+            
+x = GlobalAveragePooling2D()(x)
+hidden = Dropout(dropout, name='dropout')(x)
+# Means
+z_mean = Dense(gauss_size, name='z_mean')(hidden)
+# Standart deviation
+z_log_var = Dense(gauss_size, name='z_log_var')(hidden)
+# Softmax Classifier
+y_pred = Dense(num_classes, activation='softmax')(z_mean)
+
+
+if Mode == 'inference':
+        model = Model(inputs=[input_layer], outputs=[z_mean])
+        model_weights_path = os.path.join(Weights_path,model_name)
+        try:
+            model.load_weights(model_weights_path, by_name=True)
+            print("successfully loaded weights...")
+        except:
+            pass
+        return model, model_name
+    else:  # Trining
+        model = Model(inputs=[input_layer, y], outputs=[y_pred])
+        # Load weights
+        if Mode =="train":
+            baseline = 'mobilenet_vehicleID.h5'
+            weight_path = os.path.join(Weights_path, baseline)
+            model.load_weights(weight_path, by_name=True)
+            print(
+                "successfully loaded VehicleID weights.")
+        elif Mode == "resume_training":
+            model_weights_path = os.path.join(folder_model_weights_path,model_name)
+            try:
+                model.load_weights(model_weights_path, by_name=True)
+                print("successfully loaded weights to resum training.")
+            except:
+                pass
+        # Aadding loss
+        kl_loss = - 0.5 * K.sum(1 + z_log_var - K.square(z_mean) - K.exp(z_log_var), axis=-1)
+        cls_loss = K.categorical_crossentropy(y, y_pred)
+        combined_loss = K.mean(cls_loss + kl_loss * 0.1)
+        model.add_loss(combined_loss)
+        # Optimizer
+        opt = Adam(lr=0.00001, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
+        model.compile(optimizer=opt, metrics=['accuracy'])
+        model.summary()
+        # Define targeted feature to be used for matching
+        target_feature = 'z_mean' 
+        print("Model is ready ....")
+        return model, model_name, target_feature
+
+
+full_time = 0.0
+for i in range(0, epochs):
+    current_index = 0
+
+    while current_index + batch_size < len(training_images):
+        start_time = time.time()
+
+        b, l = get_batch()
+        start_time = time.time()
+        loss, accuracy = model.train_on_batch(b, l)
+        end_time = time.time()
+
+        print('batch {}/{} loss: {} accuracy: {} time: {}ms'.format(int(current_index / batch_size), int(nice_n / batch_size), loss, accuracy, 1000 * (end_time - start_time)), flush=True)
+        full_time += (1000 * (end_time - start_time))
+    print('epoch {}/{}'.format(i, epochs))
+print('Elapsed Time:', full_time)
+current_index = 0
+loss = 0.0
+acc = 0.0
+
+while current_index + batch_size < len(training_images):
+    b, l = get_batch()
+
+    score = model.test_on_batch(b, l)
+    print('Test batch score:', score[0])
+    print('Test batch accuracy:', score[1], flush = True)
+
+    loss += score[0]
+    acc += score[1]
+
+loss = loss / int(nice_n / batch_size)
+acc = acc / int(nice_n / batch_size)
+
+model_path = "kl.h5"
+model.save_weights('kl_W.h5')
+model.save(model_path)
+
+
+
+
+
+
+
+
+
+# save the multi-label binarizer to disk
+print("[INFO] serializing label binarizer...")
+f = open(labelbin, "wb")
+f.write(pickle.dumps(mlb))
+f.close()
+
+
+
+
+
